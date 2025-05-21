@@ -1,7 +1,8 @@
+# --- Full Updated Code with Direct Short Answer Questions ---
+
 import streamlit as st
 import pandas as pd
 from pymongo import MongoClient
-import streamlit.components.v1 as components
 import speech_recognition as sr
 from gtts import gTTS
 import io
@@ -9,6 +10,11 @@ import time
 import numpy as np
 import soundfile as sf
 from speechbrain.pretrained import SepformerSeparation
+from transformers import pipeline
+from huggingface_hub import login
+
+# --- Authenticate Hugging Face API ---
+login("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")
 
 # --- Page config ---
 st.set_page_config(page_title="Learning Dashboard", layout="wide")
@@ -52,23 +58,19 @@ def insert_recommendation(text):
 
 # --- Pages ---
 def page_home():
-    st.title("📚 Home - Learning Dashboard")
-
+    st.title("\U0001F4DA Home - Learning Dashboard")
     courses = load_courses()
     recs = load_recommendations()
-
     col1, col2 = st.columns(2)
-
     with col1:
-        st.subheader("🟢 Ongoing Courses")
+        st.subheader("\U0001F7E2 Ongoing Courses")
         if courses:
             df = pd.DataFrame(courses)
             st.dataframe(df, use_container_width=True)
         else:
             st.info("No courses found.")
-
     with col2:
-        st.subheader("📈 Progress Summary")
+        st.subheader("\U0001F4C8 Progress Summary")
         if courses:
             progress_data = {
                 "Course": [c["Course"] for c in courses],
@@ -78,9 +80,8 @@ def page_home():
             st.bar_chart(df.set_index("Course"))
         else:
             st.info("No progress data.")
-
     st.markdown("---")
-    st.subheader("🎯 Recommendations")
+    st.subheader("\U0001F3AF Recommendations")
     if recs:
         for r in recs:
             st.markdown(f"- {r}")
@@ -88,8 +89,7 @@ def page_home():
         st.info("No recommendations available.")
 
 def page_my_courses():
-    st.title("📘 My Courses")
-
+    st.title("\U0001F4D8 My Courses")
     courses = load_courses()
     st.subheader("Current Courses")
     if courses:
@@ -97,8 +97,7 @@ def page_my_courses():
         st.table(df)
     else:
         st.info("No courses found.")
-
-    st.subheader("➕ Add New Course")
+    st.subheader("\u2795 Add New Course")
     with st.form("add_course"):
         name = st.text_input("Course Name")
         progress = st.slider("Progress (%)", 0, 100, 0)
@@ -109,16 +108,14 @@ def page_my_courses():
             st.success(f"Course '{name}' added successfully!")
 
 def page_add_recommendation():
-    st.title("🧐 Add Recommendation")
-
+    st.title("\U0001F9D0 Add Recommendation")
     with st.form("add_rec"):
         rec_text = st.text_area("Enter recommendation")
         submitted = st.form_submit_button("Add")
         if submitted and rec_text:
             insert_recommendation(rec_text)
             st.success("Recommendation added!")
-
-    st.subheader("📌 Current Recommendations")
+    st.subheader("\U0001F4CC Current Recommendations")
     recs = load_recommendations()
     if recs:
         st.markdown("\n".join([f"> {r}" for r in recs]))
@@ -126,43 +123,27 @@ def page_add_recommendation():
         st.info("No recommendations found.")
 
 def page_settings():
-    st.title("⚙️ Settings")
+    st.title("\u2699\ufe0f Settings")
     st.subheader("Theme Preferences")
     theme = st.radio("Choose theme:", ["Light", "Dark"], index=0)
-
     if theme == "Dark":
-        components.html("""
+        st.markdown("""
         <style>
-        body {
-            background-color: #0e1117;
-            color: white;
-        }
-        .stApp {
-            background-color: #0e1117;
-            color: white;
-        }
+        .stApp { background-color: #0e1117; color: white; }
         </style>
-        """, height=0)
+        """, unsafe_allow_html=True)
     else:
-        components.html("""
+        st.markdown("""
         <style>
-        body {
-            background-color: white;
-            color: black;
-        }
-        .stApp {
-            background-color: white;
-            color: black;
-        }
+        .stApp { background-color: white; color: black; }
         </style>
-        """, height=0)
-
+        """, unsafe_allow_html=True)
     st.subheader("User Preferences")
     username = st.text_input("Enter your display name")
     notifications = st.checkbox("Enable notifications")
     st.success("Preferences saved locally (not stored in DB yet).")
 
-# --- Smart Audio Quiz Setup ---
+# --- Audio Quiz Utilities ---
 AUDIO_SAMPLE_RATE = 16000
 MODEL_NAME = "speechbrain/sepformer-wham16k-enhancement"
 
@@ -176,114 +157,106 @@ def speak(text):
     tts.write_to_fp(fp)
     fp.seek(0)
     st.audio(fp.read(), format="audio/mp3")
-    time.sleep(len(text.split()) * 0.6 + 1)
+    time.sleep(len(text.split()) * 0.55 + 0.8)
 
 def enhance_audio(input_audio, sample_rate=16000):
     raw_data = input_audio.get_raw_data(convert_rate=sample_rate, convert_width=2)
     np_audio = np.frombuffer(raw_data, np.int16).astype(np.float32) / 32768.0
     sf.write("input.wav", np_audio, sample_rate)
-    
     separator = load_speechbrain_model()
     est_sources = separator.separate_file(path="input.wav")
     enhanced = est_sources[0].squeeze().cpu().numpy()
-    
     sf.write("enhanced.wav", enhanced, sample_rate)
     with open("enhanced.wav", "rb") as f:
         enhanced_bytes = f.read()
-    
     return sr.AudioData(enhanced_bytes, sample_rate, 2)
 
 def listen():
     recognizer = sr.Recognizer()
-    recognizer.energy_threshold = 300
-    recognizer.pause_threshold = 1.0
-
     try:
         with sr.Microphone(sample_rate=AUDIO_SAMPLE_RATE) as source:
             st.info("Listening…")
             recognizer.adjust_for_ambient_noise(source, duration=1)
             audio = recognizer.listen(source, timeout=10, phrase_time_limit=7)
-
         if st.session_state.get("use_speechbrain_checkbox", False):
-            st.info("Enhancing audio...")
             audio = enhance_audio(audio)
-
         response = recognizer.recognize_google(audio)
         st.success(f"You said: {response}")
         return response.lower()
-    except sr.UnknownValueError:
+    except Exception:
         st.warning("Could not understand audio.")
-    except sr.RequestError:
-        st.error("Could not connect to recognition service.")
-    except Exception as e:
-        st.error(f"Microphone error: {e}")
-    return ""
+        return ""
 
 def listen_with_retry(retries=2):
     for _ in range(retries):
         result = listen()
         if result:
             return result
-        speak("I did not catch that. Please say it again.")
+        speak("Please say it again.")
     return ""
 
-# Quiz questions related to multiple CS subjects including DBMS, Java, etc.
-questions = [
-    {"question": "What does SQL stand for in databases?", "answer": "structured query language"},
-    {"question": "Name the four main concepts of Object Oriented Programming in Java.", 
-     "answer": "encapsulation inheritance polymorphism abstraction"},
-    {"question": "Which command is used to remove all rows from a table in SQL?", "answer": "truncate"},
-    {"question": "What is a primary key in a database?", 
-     "answer": "a unique identifier for each record"},
-    {"question": "Which keyword is used to create a new object in Java?", "answer": "new"},
-]
+@st.cache_resource(show_spinner=False)
+def get_question_generator():
+    return pipeline("text2text-generation", model="google/flan-t5-large")
 
-def run_quiz():
+def generate_questions(concept):
+    gen = get_question_generator()
+    prompt = (
+        f"Generate 5 short, open-ended, direct-answer quiz questions "
+        f"about the topic: {concept}. Do not include any multiple-choice options or answer choices."
+    )
+    output = gen(prompt, max_new_tokens=150, do_sample=True)[0]['generated_text']
+    lines = output.strip().split('\n')
+    questions = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        for prefix in ['1.', '2.', '3.', '4.', '5.', '-', '*']:
+            if line.startswith(prefix):
+                line = line[len(prefix):].strip()
+        line = line.rstrip('.')
+        questions.append(line)
+    return questions[:5]
+
+def run_concept_quiz():
+    speak("What concept would you like to be quizzed on?")
+    concept = listen_with_retry()
+    if not concept:
+        st.warning("No concept detected, please try again.")
+        return
+    st.write(f"Concept: {concept}")
+    speak(f"Generating questions for {concept}. Please wait.")
+    with st.spinner("Generating questions..."):
+        quiz_questions = generate_questions(concept)
+    if not quiz_questions:
+        st.error("Failed to generate questions. Try a different concept.")
+        return
     score = 0
-    speak("Welcome to the Smart Audio Quiz.")
-    st.write("Welcome to the Smart Audio Quiz.")
-
-    speak("What is your name?")
-    name = listen_with_retry().title()
-    if not name:
-        name = "Student"
-
-    speak(f"Hello {name}, let's begin the quiz.")
-    st.write(f"Hello {name}, let's begin the quiz.")
-
-    for i, q in enumerate(questions, start=1):
-        speak(f"Question {i}: {q['question']}")
-        st.write(f"Q{i}: {q['question']}")
+    for i, q in enumerate(quiz_questions, start=1):
+        speak(f"Question {i}: {q}")
+        st.write(f"Q{i}: {q}")
         speak("Your answer?")
-        answer = listen_with_retry()
-
-        if all(word in answer for word in q['answer'].split()):
-            speak("Correct.")
-            st.success("Correct!")
+        ans = listen_with_retry()
+        if ans.strip() == "true":
             score += 1
+            st.success("Correct answer. +1 mark.")
         else:
-            speak(f"Incorrect. The correct answer is {q['answer']}.")
-            st.error(f"Incorrect. Correct: {q['answer']}")
+            score -= 0.25
+            st.warning("Incorrect answer. -0.25 mark.")
+    speak(f"Your final score is {score:.2f} out of {len(quiz_questions)}.")
+    st.success(f"Final Score: {score:.2f}/{len(quiz_questions)}")
 
-        time.sleep(1.5)
-
-    speak(f"{name}, your score is {score} out of {len(questions)}.")
-    st.success(f"Final Score: {score}/{len(questions)}")
-    speak("Thanks for playing.")
-
-# --- Student Activity Page ---
 def page_student_activity():
-    st.title("🎤 Student Activity - Smart Audio Quiz")
+    st.title("\U0001F3A4 Student Activity - Smart Audio Quiz")
     st.checkbox("Enable SpeechBrain Noise Reduction", key="use_speechbrain_checkbox")
+    if st.button("Start Quiz on Concept"):
+        run_concept_quiz()
 
-    if st.button("Start Quiz"):
-        run_quiz()
-
-# --- Main App ---
+# --- Main ---
 def main():
-    st.sidebar.title("🔍 Navigation")
+    st.sidebar.title("\U0001F50D Navigation")
     page = st.sidebar.radio("Go to", ["Home", "My Courses", "Add Recommendation", "Student Activity", "Settings"])
-
     if page == "Home":
         page_home()
     elif page == "My Courses":
