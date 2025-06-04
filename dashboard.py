@@ -1,4 +1,4 @@
-# --- Full Updated Code with Direct Short Answer Questions ---
+# --- Full Updated Streamlit App with PDF-Based Audio Quiz Integration ---
 
 import streamlit as st
 import pandas as pd
@@ -9,6 +9,7 @@ import io
 import time
 import numpy as np
 import soundfile as sf
+import fitz  # PyMuPDF
 from speechbrain.pretrained import SepformerSeparation
 from transformers import pipeline
 from huggingface_hub import login
@@ -55,6 +56,108 @@ def insert_course(course, progress, status):
 
 def insert_recommendation(text):
     recs_col.insert_one({"text": text})
+
+# --- Audio Quiz Utilities ---
+AUDIO_SAMPLE_RATE = 16000
+MODEL_NAME = "speechbrain/sepformer-wham16k-enhancement"
+
+@st.cache_resource(show_spinner=False)
+def load_speechbrain_model():
+    return SepformerSeparation.from_hparams(source=MODEL_NAME, savedir="pretrained_models")
+
+def speak(text):
+    tts = gTTS(text=text)
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    fp.seek(0)
+    st.audio(fp.read(), format="audio/mp3")
+    time.sleep(len(text.split()) * 0.55 + 0.8)
+
+def enhance_audio(input_audio, sample_rate=16000):
+    raw_data = input_audio.get_raw_data(convert_rate=sample_rate, convert_width=2)
+    np_audio = np.frombuffer(raw_data, np.int16).astype(np.float32) / 32768.0
+    sf.write("input.wav", np_audio, sample_rate)
+    separator = load_speechbrain_model()
+    est_sources = separator.separate_file(path="input.wav")
+    enhanced = est_sources[0].squeeze().cpu().numpy()
+    sf.write("enhanced.wav", enhanced, sample_rate)
+    with open("enhanced.wav", "rb") as f:
+        enhanced_bytes = f.read()
+    return sr.AudioData(enhanced_bytes, sample_rate, 2)
+
+def listen():
+    recognizer = sr.Recognizer()
+    try:
+        with sr.Microphone(sample_rate=AUDIO_SAMPLE_RATE) as source:
+            st.info("Listening…")
+            recognizer.adjust_for_ambient_noise(source, duration=1)
+            audio = recognizer.listen(source, timeout=10, phrase_time_limit=7)
+        if st.session_state.get("use_speechbrain_checkbox", False):
+            audio = enhance_audio(audio)
+        response = recognizer.recognize_google(audio)
+        st.success(f"You said: {response}")
+        return response.lower()
+    except Exception:
+        st.warning("Could not understand audio.")
+        return ""
+
+def listen_with_retry(retries=2):
+    for _ in range(retries):
+        result = listen()
+        if result:
+            return result
+        speak("Please say it again.")
+    return ""
+
+@st.cache_resource(show_spinner=False)
+def get_question_generator():
+    return pipeline("text2text-generation", model="google/flan-t5-large")
+
+def extract_text_from_pdf(uploaded_file):
+    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+    return "\n".join([page.get_text() for page in doc])
+
+def generate_questions_from_text(text):
+    gen = get_question_generator()
+    prompt = (
+        f"Generate 5 short, open-ended, direct-answer quiz questions from the following content:\n{text}\n"
+        f"Do not include any multiple-choice options."
+    )
+    output = gen(prompt, max_new_tokens=180, do_sample=True)[0]['generated_text']
+    lines = output.strip().split('\n')
+    questions = []
+    for line in lines:
+        line = line.strip()
+        for prefix in ['1.', '2.', '3.', '4.', '5.', '-', '*']:
+            if line.startswith(prefix):
+                line = line[len(prefix):].strip()
+        if line:
+            questions.append(line.rstrip('.'))
+    return questions[:5]
+
+def run_pdf_quiz():
+    uploaded_file = st.file_uploader("Upload a PDF file", type="pdf")
+    if uploaded_file:
+        with st.spinner("Extracting content and generating questions..."):
+            content = extract_text_from_pdf(uploaded_file)
+            questions = generate_questions_from_text(content)
+        if not questions:
+            st.error("No questions generated. Try another PDF.")
+            return
+        score = 0
+        for i, q in enumerate(questions, start=1):
+            speak(f"Question {i}: {q}")
+            st.write(f"Q{i}: {q}")
+            speak("Your answer?")
+            ans = listen_with_retry()
+            if ans.strip() == "true":
+                score += 1
+                st.success("Correct answer. +1 mark.")
+            else:
+                score -= 0.25
+                st.warning("Incorrect answer. -0.25 mark.")
+        speak(f"Your final score is {score:.2f} out of {len(questions)}.")
+        st.success(f"Final Score: {score:.2f}/{len(questions)}")
 
 # --- Pages ---
 def page_home():
@@ -122,9 +225,13 @@ def page_add_recommendation():
     else:
         st.info("No recommendations found.")
 
+def page_student_activity():
+    st.title("\U0001F3A4 Student Activity - Smart Audio Quiz")
+    st.checkbox("Enable SpeechBrain Noise Reduction", key="use_speechbrain_checkbox")
+    run_pdf_quiz()
+
 def page_settings():
     st.title("\u2699\ufe0f Settings")
-    st.subheader("Theme Preferences")
     theme = st.radio("Choose theme:", ["Light", "Dark"], index=0)
     if theme == "Dark":
         st.markdown("""
@@ -138,120 +245,8 @@ def page_settings():
         .stApp { background-color: white; color: black; }
         </style>
         """, unsafe_allow_html=True)
-    st.subheader("User Preferences")
-    username = st.text_input("Enter your display name")
-    notifications = st.checkbox("Enable notifications")
-    st.success("Preferences saved locally (not stored in DB yet).")
-
-# --- Audio Quiz Utilities ---
-AUDIO_SAMPLE_RATE = 16000
-MODEL_NAME = "speechbrain/sepformer-wham16k-enhancement"
-
-@st.cache_resource(show_spinner=False)
-def load_speechbrain_model():
-    return SepformerSeparation.from_hparams(source=MODEL_NAME, savedir="pretrained_models")
-
-def speak(text):
-    tts = gTTS(text=text)
-    fp = io.BytesIO()
-    tts.write_to_fp(fp)
-    fp.seek(0)
-    st.audio(fp.read(), format="audio/mp3")
-    time.sleep(len(text.split()) * 0.55 + 0.8)
-
-def enhance_audio(input_audio, sample_rate=16000):
-    raw_data = input_audio.get_raw_data(convert_rate=sample_rate, convert_width=2)
-    np_audio = np.frombuffer(raw_data, np.int16).astype(np.float32) / 32768.0
-    sf.write("input.wav", np_audio, sample_rate)
-    separator = load_speechbrain_model()
-    est_sources = separator.separate_file(path="input.wav")
-    enhanced = est_sources[0].squeeze().cpu().numpy()
-    sf.write("enhanced.wav", enhanced, sample_rate)
-    with open("enhanced.wav", "rb") as f:
-        enhanced_bytes = f.read()
-    return sr.AudioData(enhanced_bytes, sample_rate, 2)
-
-def listen():
-    recognizer = sr.Recognizer()
-    try:
-        with sr.Microphone(sample_rate=AUDIO_SAMPLE_RATE) as source:
-            st.info("Listening…")
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            audio = recognizer.listen(source, timeout=10, phrase_time_limit=7)
-        if st.session_state.get("use_speechbrain_checkbox", False):
-            audio = enhance_audio(audio)
-        response = recognizer.recognize_google(audio)
-        st.success(f"You said: {response}")
-        return response.lower()
-    except Exception:
-        st.warning("Could not understand audio.")
-        return ""
-
-def listen_with_retry(retries=2):
-    for _ in range(retries):
-        result = listen()
-        if result:
-            return result
-        speak("Please say it again.")
-    return ""
-
-@st.cache_resource(show_spinner=False)
-def get_question_generator():
-    return pipeline("text2text-generation", model="google/flan-t5-large")
-
-def generate_questions(concept):
-    gen = get_question_generator()
-    prompt = (
-        f"Generate 5 short, open-ended, direct-answer quiz questions "
-        f"about the topic: {concept}. Do not include any multiple-choice options or answer choices."
-    )
-    output = gen(prompt, max_new_tokens=150, do_sample=True)[0]['generated_text']
-    lines = output.strip().split('\n')
-    questions = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        for prefix in ['1.', '2.', '3.', '4.', '5.', '-', '*']:
-            if line.startswith(prefix):
-                line = line[len(prefix):].strip()
-        line = line.rstrip('.')
-        questions.append(line)
-    return questions[:5]
-
-def run_concept_quiz():
-    speak("What concept would you like to be quizzed on?")
-    concept = listen_with_retry()
-    if not concept:
-        st.warning("No concept detected, please try again.")
-        return
-    st.write(f"Concept: {concept}")
-    speak(f"Generating questions for {concept}. Please wait.")
-    with st.spinner("Generating questions..."):
-        quiz_questions = generate_questions(concept)
-    if not quiz_questions:
-        st.error("Failed to generate questions. Try a different concept.")
-        return
-    score = 0
-    for i, q in enumerate(quiz_questions, start=1):
-        speak(f"Question {i}: {q}")
-        st.write(f"Q{i}: {q}")
-        speak("Your answer?")
-        ans = listen_with_retry()
-        if ans.strip() == "true":
-            score += 1
-            st.success("Correct answer. +1 mark.")
-        else:
-            score -= 0.25
-            st.warning("Incorrect answer. -0.25 mark.")
-    speak(f"Your final score is {score:.2f} out of {len(quiz_questions)}.")
-    st.success(f"Final Score: {score:.2f}/{len(quiz_questions)}")
-
-def page_student_activity():
-    st.title("\U0001F3A4 Student Activity - Smart Audio Quiz")
-    st.checkbox("Enable SpeechBrain Noise Reduction", key="use_speechbrain_checkbox")
-    if st.button("Start Quiz on Concept"):
-        run_concept_quiz()
+    st.text_input("Enter your display name")
+    st.checkbox("Enable notifications")
 
 # --- Main ---
 def main():

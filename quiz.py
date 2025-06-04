@@ -133,9 +133,6 @@ def run_quiz():
     st.success(f"Final Score: {score}/{len(questions)}")
     speak("Thanks for playing.")
 
-# -------------------
-# Streamlit UI
-# -------------------
 st.set_page_config(page_title="🎤 Smart Audio Quiz", layout="centered")
 st.title("🎤 Smart Audio Quiz")
 
